@@ -1,0 +1,7 @@
+.git
+.github
+.terraform
+**/.terraform
+*.tfstate*
+bin
+loadtest/results

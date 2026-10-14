@@ -1,0 +1,16 @@
+/bin/
+*.test
+coverage.out
+.env
+.env.*
+!.env.example
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+/loadtest/results/
