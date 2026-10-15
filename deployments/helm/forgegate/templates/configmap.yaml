@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "forgegate.fullname" . }}
+  labels:
+    {{- include "forgegate.labels" . | nindent 4 }}
+data:
+  FORGEGATE_ENV: {{ .Values.config.environment | quote }}
+  FORGEGATE_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  FORGEGATE_REDIS_ADDR: {{ .Values.config.redisAddr | quote }}
+  FORGEGATE_NATS_URL: {{ .Values.config.natsURL | quote }}
+  FORGEGATE_OTEL_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
+  FORGEGATE_REQUEST_TIMEOUT: {{ .Values.config.requestTimeout | quote }}
+  FORGEGATE_SHUTDOWN_TIMEOUT: {{ .Values.config.shutdownTimeout | quote }}
+  FORGEGATE_MIGRATE_ON_START: "true"

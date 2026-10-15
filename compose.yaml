@@ -1,0 +1,145 @@
+name: forgegate
+
+x-forgegate-environment: &forgegate-environment
+  FORGEGATE_ENV: development
+  FORGEGATE_LOG_LEVEL: info
+  FORGEGATE_DATABASE_URL: postgres://forgegate:forgegate@postgres:5432/forgegate?sslmode=disable
+  FORGEGATE_REDIS_ADDR: redis:6379
+  FORGEGATE_NATS_URL: nats://nats:4222
+  FORGEGATE_OTEL_ENDPOINT: otel-collector:4317
+  FORGEGATE_REQUEST_TIMEOUT: 30s
+  FORGEGATE_SHUTDOWN_TIMEOUT: 20s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: forgegate
+      POSTGRES_USER: forgegate
+      POSTGRES_PASSWORD: forgegate
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forgegate -d forgegate"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "6379:6379"
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+  gateway:
+    build:
+      context: .
+      args:
+        BINARY: gateway
+    environment:
+      <<: *forgegate-environment
+      FORGEGATE_HTTP_ADDR: :8080
+      FORGEGATE_MIGRATE_ON_START: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    ports:
+      - "8080:8080"
+
+  worker:
+    build:
+      context: .
+      args:
+        BINARY: worker
+    environment:
+      <<: *forgegate-environment
+      FORGEGATE_WORKER_METRICS_ADDR: :9090
+      FORGEGATE_MIGRATE_ON_START: "false"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9090/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "9091:9090"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.105.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./deployments/docker/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    volumes:
+      - ./deployments/docker/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./deployments/docker/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - gateway
+      - worker
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: forgegate
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deployments/docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deployments/docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres-data:
+  redis-data:
+  nats-data:
+  prometheus-data:
+  grafana-data:

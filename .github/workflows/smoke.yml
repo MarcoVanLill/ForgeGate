@@ -1,0 +1,27 @@
+name: k6 smoke test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start core stack
+        run: docker compose up -d --build postgres redis nats gateway worker
+      - name: Wait for readiness
+        run: timeout 120 sh -c 'until curl -fsS http://localhost:8080/health/ready; do sleep 2; done'
+      - uses: grafana/setup-k6-action@v1
+      - run: k6 run loadtest/smoke.js
+      - name: Service logs
+        if: always()
+        run: docker compose logs --no-color gateway worker
+      - name: Stop stack
+        if: always()
+        run: docker compose down -v

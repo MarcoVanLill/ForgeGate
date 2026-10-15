@@ -1,0 +1,56 @@
+image:
+  repository: ghcr.io/marcovanlill/forgegate
+  tag: latest
+  pullPolicy: IfNotPresent
+
+gateway:
+  replicas: 2
+  port: 8080
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 1, memory: 512Mi}
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+worker:
+  replicas: 2
+  metricsPort: 9090
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 1, memory: 512Mi}
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+
+config:
+  environment: production
+  logLevel: info
+  redisAddr: redis.default.svc.cluster.local:6379
+  natsURL: nats://nats.default.svc.cluster.local:4222
+  otelEndpoint: otel-collector.observability.svc.cluster.local:4317
+  requestTimeout: 30s
+  shutdownTimeout: 20s
+
+# Must contain FORGEGATE_DATABASE_URL and optionally provider/Redis credentials.
+existingSecret: forgegate-secrets
+
+podDisruptionBudget:
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: ""
+
+imagePullSecrets: []
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

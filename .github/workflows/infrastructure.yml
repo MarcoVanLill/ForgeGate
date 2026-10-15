@@ -1,0 +1,24 @@
+name: Infrastructure validation
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint deployments/helm/forgegate
+      - name: Render Helm manifests
+        run: helm template ci deployments/helm/forgegate > /tmp/forgegate.yaml
+      - uses: hashicorp/setup-terraform@v3
+        with: {terraform_version: 1.9.8}
+      - run: terraform fmt -check -recursive
+      - run: terraform -chdir=infra/terraform init -backend=false
+      - run: terraform -chdir=infra/terraform validate
+      - run: docker compose config --quiet

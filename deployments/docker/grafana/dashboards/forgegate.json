@@ -1,0 +1,23 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {"type":"stat","title":"Request rate","id":1,"gridPos":{"h":5,"w":6,"x":0,"y":0},"targets":[{"expr":"sum(rate(forgegate_http_requests_total[5m]))","legendFormat":"req/s"}]},
+    {"type":"stat","title":"5xx ratio","id":2,"gridPos":{"h":5,"w":6,"x":6,"y":0},"targets":[{"expr":"sum(rate(forgegate_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(forgegate_http_requests_total[5m])), 0.001)","legendFormat":"ratio"}]},
+    {"type":"stat","title":"Queue depth","id":3,"gridPos":{"h":5,"w":6,"x":12,"y":0},"targets":[{"expr":"max(forgegate_job_queue_depth)","legendFormat":"pending"}]},
+    {"type":"stat","title":"Rate-limit rejections","id":4,"gridPos":{"h":5,"w":6,"x":18,"y":0},"targets":[{"expr":"sum(increase(forgegate_rate_limit_rejections_total[1h]))","legendFormat":"last hour"}]},
+    {"type":"timeseries","title":"HTTP latency percentiles","id":5,"gridPos":{"h":8,"w":12,"x":0,"y":5},"targets":[{"expr":"histogram_quantile(0.50, sum(rate(forgegate_http_request_duration_seconds_bucket[5m])) by (le))","legendFormat":"p50"},{"expr":"histogram_quantile(0.95, sum(rate(forgegate_http_request_duration_seconds_bucket[5m])) by (le))","legendFormat":"p95"},{"expr":"histogram_quantile(0.99, sum(rate(forgegate_http_request_duration_seconds_bucket[5m])) by (le))","legendFormat":"p99"}]},
+    {"type":"timeseries","title":"Provider outcomes","id":6,"gridPos":{"h":8,"w":12,"x":12,"y":5},"targets":[{"expr":"sum(rate(forgegate_provider_calls_total[5m])) by (provider, outcome)","legendFormat":"{{provider}} {{outcome}}"}]},
+    {"type":"timeseries","title":"Job outcomes","id":7,"gridPos":{"h":8,"w":12,"x":0,"y":13},"targets":[{"expr":"sum(rate(forgegate_jobs_total[5m])) by (outcome)","legendFormat":"{{outcome}}"}]},
+    {"type":"timeseries","title":"Provider fallback rate","id":8,"gridPos":{"h":8,"w":12,"x":12,"y":13},"targets":[{"expr":"sum(rate(forgegate_provider_fallbacks_total[5m])) by (from, to)","legendFormat":"{{from}} → {{to}}"}]}
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["forgegate"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "ForgeGate Overview",
+  "uid": "forgegate-overview",
+  "version": 1
+}

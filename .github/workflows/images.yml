@@ -1,0 +1,26 @@
+name: Container images
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        binary: [gateway, worker]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          build-args: BINARY=${{ matrix.binary }}
+          tags: forgegate-${{ matrix.binary }}:ci
+          cache-from: type=gha,scope=${{ matrix.binary }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.binary }}

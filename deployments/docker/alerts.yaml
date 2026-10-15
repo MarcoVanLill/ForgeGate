@@ -1,0 +1,24 @@
+groups:
+  - name: forgegate
+    rules:
+      - alert: ForgeGateHighErrorRatio
+        expr: sum(rate(forgegate_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(forgegate_http_requests_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: ForgeGate HTTP 5xx ratio exceeds 5%
+      - alert: ForgeGateQueueBacklog
+        expr: forgegate_job_queue_depth > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: ForgeGate job queue has sustained backlog
+      - alert: ForgeGateProviderCircuitOpen
+        expr: forgegate_provider_circuit_open == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: A ForgeGate provider circuit is open
