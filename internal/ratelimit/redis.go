@@ -32,7 +32,7 @@ func (l *Limiter) Allow(ctx context.Context, tenantID uuid.UUID, limit int) (Res
 	key := fmt.Sprintf("%s:%s:%d", l.prefix, tenantID, window)
 	raw, err := fixedWindowScript.Run(ctx, l.client, []string{key}, limit, time.Minute.Milliseconds()).Slice()
 	if err != nil {
-		return Result{}, fmt.Errorf("Redis rate limit: %w", err)
+		return Result{}, fmt.Errorf("redis rate limit: %w", err)
 	}
 	allowed, _ := raw[0].(int64)
 	remaining, _ := raw[1].(int64)

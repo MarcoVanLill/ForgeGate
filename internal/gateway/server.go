@@ -213,9 +213,13 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 	result, err := s.router.Complete(ctx, tenant.ID, request)
 	record.Latency = time.Since(started)
 	if err != nil {
-		record.ErrorCode = "provider_error"
+		status, code, message := http.StatusBadGateway, "provider_error", "all configured providers failed"
+		if errors.Is(err, routing.ErrSaturated) {
+			status, code, message = http.StatusServiceUnavailable, "overloaded", "all provider capacity is currently in use"
+		}
+		record.StatusCode, record.ErrorCode = status, code
 		s.record(record)
-		httpx.Error(w, r, http.StatusBadGateway, "provider_error", "all configured providers failed")
+		httpx.Error(w, r, status, code, message)
 		return
 	}
 	record.Provider = result.Provider
@@ -289,15 +293,11 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant, _ := auth.Tenant(r.Context())
-	if err := s.store.ReserveRequest(r.Context(), tenant, 0); err != nil {
-		if errors.Is(err, storage.ErrBudgetExceeded) {
-			httpx.Error(w, r, http.StatusPaymentRequired, "budget_exceeded", "tenant monthly budget exceeded")
-			return
-		}
-		httpx.Error(w, r, http.StatusServiceUnavailable, "storage_unavailable", "unable to reserve tenant budget")
+	job, duplicate, err := s.store.CreateJob(r.Context(), tenant, key, providers.Request{Model: input.Model, Input: input.Input, MaxOutputTokens: input.MaxOutputTokens})
+	if errors.Is(err, storage.ErrBudgetExceeded) {
+		httpx.Error(w, r, http.StatusPaymentRequired, "budget_exceeded", "tenant monthly budget exceeded")
 		return
 	}
-	job, duplicate, err := s.store.CreateJob(r.Context(), tenant.ID, key, providers.Request{Model: input.Model, Input: input.Input, MaxOutputTokens: input.MaxOutputTokens})
 	if err != nil {
 		httpx.Error(w, r, http.StatusInternalServerError, "job_creation_failed", "unable to create job")
 		return

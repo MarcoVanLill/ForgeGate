@@ -169,3 +169,7 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO routing_policies (id, tenant_id, name, model_pattern)
 VALUES ('44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'default-priority-fallback', '*')
 ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO audit_events (tenant_id, actor, action, target_type, target_id, metadata)
+SELECT '11111111-1111-1111-1111-111111111111', 'migration:000001', 'provider.config_seeded', 'provider', 'fake-primary', '{"local_only":true}'::jsonb
+WHERE NOT EXISTS (SELECT 1 FROM audit_events WHERE actor='migration:000001' AND action='provider.config_seeded' AND target_id='fake-primary');

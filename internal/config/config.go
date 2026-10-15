@@ -13,6 +13,7 @@ type Config struct {
 	Environment        string
 	LogLevel           string
 	HTTPAddr           string
+	WorkerMetricsAddr  string
 	DatabaseURL        string
 	RedisAddr          string
 	RedisPassword      string
@@ -30,9 +31,10 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		Environment: env("FORGEGATE_ENV", "development"), LogLevel: env("FORGEGATE_LOG_LEVEL", "info"),
-		HTTPAddr:    env("FORGEGATE_HTTP_ADDR", ":8080"),
-		DatabaseURL: env("FORGEGATE_DATABASE_URL", "postgres://forgegate:forgegate@localhost:5432/forgegate?sslmode=disable"),
-		RedisAddr:   env("FORGEGATE_REDIS_ADDR", "localhost:6379"), RedisPassword: os.Getenv("FORGEGATE_REDIS_PASSWORD"),
+		HTTPAddr:          env("FORGEGATE_HTTP_ADDR", ":8080"),
+		WorkerMetricsAddr: env("FORGEGATE_WORKER_METRICS_ADDR", ":9090"),
+		DatabaseURL:       env("FORGEGATE_DATABASE_URL", "postgres://forgegate:forgegate@localhost:5432/forgegate?sslmode=disable"),
+		RedisAddr:         env("FORGEGATE_REDIS_ADDR", "localhost:6379"), RedisPassword: os.Getenv("FORGEGATE_REDIS_PASSWORD"),
 		NATSURL: env("FORGEGATE_NATS_URL", "nats://localhost:4222"), OTelEndpoint: os.Getenv("FORGEGATE_OTEL_ENDPOINT"),
 		OpenAIBaseURL: env("OPENAI_COMPATIBLE_BASE_URL", "https://api.openai.com"), OpenAIAPIKey: os.Getenv("OPENAI_COMPATIBLE_API_KEY"), GeminiAPIKey: os.Getenv("GEMINI_API_KEY"),
 	}

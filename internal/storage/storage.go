@@ -14,6 +14,7 @@ import (
 
 	"github.com/MarcoVanLill/ForgeGate/internal/providers"
 	"github.com/MarcoVanLill/ForgeGate/migrations"
+	"github.com/exaring/otelpgx"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -34,6 +35,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	config.MaxConns = 20
 	config.MinConns = 2
 	config.MaxConnLifetime = 30 * time.Minute
+	config.ConnConfig.Tracer = otelpgx.NewTracer()
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -63,13 +65,6 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("parse migration %s: %w", name, err)
 		}
-		var applied bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&applied); err != nil {
-			return fmt.Errorf("check migration %s: %w", name, err)
-		}
-		if applied {
-			continue
-		}
 		sql, err := migrations.FS.ReadFile(name)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
@@ -77,6 +72,21 @@ func (s *Store) Migrate(ctx context.Context) error {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", name, err)
+		}
+		// Serialize migrators across rolling deploys, then re-check the version
+		// while holding the transaction-scoped advisory lock.
+		if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(734732908314)`); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("lock migration %s: %w", name, err)
+		}
+		var applied bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&applied); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if applied {
+			_ = tx.Rollback(ctx)
+			continue
 		}
 		if _, err = tx.Exec(ctx, string(sql)); err == nil {
 			_, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES($1)`, version)
@@ -155,13 +165,21 @@ func (s *Store) ProviderConfigs(ctx context.Context, tenantID uuid.UUID, model s
 }
 
 func (s *Store) ReserveRequest(ctx context.Context, tenant Tenant, estimatedCostMicros int64) error {
+	return reserveRequest(ctx, s.pool, tenant, estimatedCostMicros)
+}
+
+type budgetQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func reserveRequest(ctx context.Context, q budgetQuerier, tenant Tenant, estimatedCostMicros int64) error {
 	month := time.Now().UTC().Format("2006-01-01")
 	var count int64
-	err := s.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		INSERT INTO tenant_usage_monthly(tenant_id,month,request_count,cost_micros) VALUES($1,$2,1,$3)
 		ON CONFLICT(tenant_id,month) DO UPDATE SET request_count=tenant_usage_monthly.request_count+1,cost_micros=tenant_usage_monthly.cost_micros+EXCLUDED.cost_micros,updated_at=now()
 		WHERE ($4=0 OR tenant_usage_monthly.request_count+1 <= $4)
-		  AND ($5=0 OR tenant_usage_monthly.cost_micros+EXCLUDED.cost_micros <= $5)
+		  AND ($5=0 OR (CASE WHEN EXCLUDED.cost_micros=0 THEN tenant_usage_monthly.cost_micros < $5 ELSE tenant_usage_monthly.cost_micros+EXCLUDED.cost_micros <= $5 END))
 		RETURNING request_count`, tenant.ID, month, estimatedCostMicros, tenant.MonthlyRequestBudget, tenant.MonthlyCostBudgetMicros).Scan(&count)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrBudgetExceeded
@@ -232,7 +250,7 @@ type Job struct {
 	CompletedAt           *time.Time          `json:"completed_at,omitempty"`
 }
 
-func (s *Store) CreateJob(ctx context.Context, tenantID uuid.UUID, key string, request providers.Request) (Job, bool, error) {
+func (s *Store) CreateJob(ctx context.Context, tenant Tenant, key string, request providers.Request) (Job, bool, error) {
 	payload, err := json.Marshal(request)
 	if err != nil {
 		return Job{}, false, fmt.Errorf("encode job request: %w", err)
@@ -242,11 +260,11 @@ func (s *Store) CreateJob(ctx context.Context, tenantID uuid.UUID, key string, r
 		return Job{}, false, fmt.Errorf("begin create job: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	job := Job{ID: uuid.New(), TenantID: tenantID, IdempotencyKey: key, Status: "queued", Request: request, MaxAttempts: 5}
+	job := Job{ID: uuid.New(), TenantID: tenant.ID, IdempotencyKey: key, Status: "queued", Request: request, MaxAttempts: 5}
 	var insertedID uuid.UUID
-	err = tx.QueryRow(ctx, `INSERT INTO jobs(id,tenant_id,idempotency_key,status,request,max_attempts) VALUES($1,$2,$3,'queued',$4,5) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING RETURNING id`, job.ID, tenantID, key, payload).Scan(&insertedID)
+	err = tx.QueryRow(ctx, `INSERT INTO jobs(id,tenant_id,idempotency_key,status,request,max_attempts) VALUES($1,$2,$3,'queued',$4,5) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING RETURNING id`, job.ID, tenant.ID, key, payload).Scan(&insertedID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		existing, getErr := getJob(ctx, tx, tenantID, uuid.Nil, key)
+		existing, getErr := getJob(ctx, tx, tenant.ID, uuid.Nil, key)
 		if getErr != nil {
 			return Job{}, false, getErr
 		}
@@ -258,7 +276,10 @@ func (s *Store) CreateJob(ctx context.Context, tenantID uuid.UUID, key string, r
 	if err != nil {
 		return Job{}, false, fmt.Errorf("insert job: %w", err)
 	}
-	eventPayload, _ := json.Marshal(map[string]any{"job_id": job.ID, "tenant_id": tenantID})
+	if err := reserveRequest(ctx, tx, tenant, 0); err != nil {
+		return Job{}, false, err
+	}
+	eventPayload, _ := json.Marshal(map[string]any{"job_id": job.ID, "tenant_id": tenant.ID})
 	if _, err := tx.Exec(ctx, `INSERT INTO outbox_events(aggregate_type,aggregate_id,event_type,payload) VALUES('job',$1,'job.created',$2)`, job.ID, eventPayload); err != nil {
 		return Job{}, false, fmt.Errorf("insert job outbox event: %w", err)
 	}
@@ -268,6 +289,31 @@ func (s *Store) CreateJob(ctx context.Context, tenantID uuid.UUID, key string, r
 	job.CreatedAt = time.Now().UTC()
 	job.UpdatedAt = job.CreatedAt
 	return job, false, nil
+}
+
+// SetProviderEnabled is the control-plane mutation boundary. It records the
+// actor and request correlation in the same transaction as the sensitive change.
+func (s *Store) SetProviderEnabled(ctx context.Context, tenantID uuid.UUID, providerName string, enabled bool, actor, requestID string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin provider update: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	command, err := tx.Exec(ctx, `UPDATE provider_configs SET enabled=$3,updated_at=now() WHERE tenant_id=$1 AND name=$2`, tenantID, providerName, enabled)
+	if err != nil {
+		return fmt.Errorf("update provider: %w", err)
+	}
+	if command.RowsAffected() != 1 {
+		return ErrNotFound
+	}
+	metadata, _ := json.Marshal(map[string]any{"enabled": enabled})
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_events(tenant_id,actor,action,target_type,target_id,request_id,metadata) VALUES($1,$2,'provider.enabled_changed','provider',$3,NULLIF($4,''),$5)`, tenantID, actor, providerName, requestID, metadata); err != nil {
+		return fmt.Errorf("audit provider update: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit provider update: %w", err)
+	}
+	return nil
 }
 
 type querier interface {
@@ -370,7 +416,7 @@ func (s *Store) ClaimJob(ctx context.Context, id uuid.UUID) (Job, bool, error) {
 }
 func (s *Store) CompleteJob(ctx context.Context, id uuid.UUID, provider string, response providers.Response) error {
 	payload, _ := json.Marshal(response)
-	command, err := s.pool.Exec(ctx, `UPDATE jobs SET status=CASE WHEN cancellation_requested THEN 'cancelled' ELSE 'completed' END,result=CASE WHEN cancellation_requested THEN NULL ELSE $2 END,selected_provider=$3,completed_at=now(),updated_at=now() WHERE id=$1 AND status='running'`, id, payload, provider)
+	command, err := s.pool.Exec(ctx, `UPDATE jobs SET status=CASE WHEN cancellation_requested THEN 'cancelled' ELSE 'completed' END,result=CASE WHEN cancellation_requested THEN NULL ELSE $2::jsonb END,selected_provider=$3,completed_at=now(),updated_at=now() WHERE id=$1 AND status='running'`, id, payload, provider)
 	if err != nil {
 		return fmt.Errorf("complete job: %w", err)
 	}

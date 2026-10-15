@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -66,6 +68,27 @@ func run() error {
 	metrics := telemetry.NewMetrics()
 	router := routing.New(store, app.ProviderFactory(cfg), metrics)
 	worker := jobs.NewWorker(store, router, js, metrics, logger, cfg.RequestTimeout)
-	logger.Info("worker started")
-	return worker.Run(rootCtx)
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", metrics.Handler())
+	metricsMux.HandleFunc("/health/live", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	metricsServer := &http.Server{Addr: cfg.WorkerMetricsAddr, Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second}
+	errorsCh := make(chan error, 2)
+	go func() { errorsCh <- worker.Run(rootCtx) }()
+	go func() {
+		logger.Info("worker metrics listening", "address", cfg.WorkerMetricsAddr)
+		errorsCh <- metricsServer.ListenAndServe()
+	}()
+	select {
+	case err := <-errorsCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	case <-rootCtx.Done():
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	return metricsServer.Shutdown(shutdownCtx)
 }

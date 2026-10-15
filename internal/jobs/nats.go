@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/MarcoVanLill/ForgeGate/internal/identity"
 	"github.com/MarcoVanLill/ForgeGate/internal/providers"
 	"github.com/MarcoVanLill/ForgeGate/internal/routing"
 	"github.com/MarcoVanLill/ForgeGate/internal/storage"
@@ -115,7 +114,10 @@ func (w *Worker) Run(ctx context.Context) error {
 		return fmt.Errorf("create durable job consumer: %w", err)
 	}
 	for {
-		messages, err := sub.Fetch(8, nats.MaxWait(time.Second), nats.Context(ctx))
+		if ctx.Err() != nil {
+			return nil
+		}
+		messages, err := sub.Fetch(8, nats.MaxWait(time.Second))
 		if errors.Is(err, nats.ErrTimeout) {
 			w.observeQueue(sub)
 			continue
@@ -238,5 +240,3 @@ func truncate(value string, max int) string {
 	}
 	return value[:max]
 }
-
-var _ = identity.NewRequestID

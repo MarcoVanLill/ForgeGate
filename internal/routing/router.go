@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -10,6 +11,9 @@ import (
 	"github.com/MarcoVanLill/ForgeGate/internal/providers"
 	"github.com/MarcoVanLill/ForgeGate/internal/storage"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 var ErrSaturated = errors.New("provider concurrency limit reached")
@@ -82,6 +86,7 @@ func (e *Engine) Complete(ctx context.Context, tenantID uuid.UUID, request provi
 		}
 		response, err := e.tryComplete(ctx, providerState, cfg, request)
 		if err == nil {
+			applyUsageCost(cfg.Settings, &response.Usage)
 			providerState.circuit.success()
 			e.observer.CircuitState(cfg.Name, "closed")
 			return Result{Response: response, Provider: cfg.Name, Fallbacks: index}, nil
@@ -95,6 +100,24 @@ func (e *Engine) Complete(ctx context.Context, tenantID uuid.UUID, request provi
 	}
 	return Result{}, lastErr
 }
+
+type pricingSettings struct {
+	Pricing struct {
+		InputMicrosPerMillionTokens  int64 `json:"input_micros_per_million_tokens"`
+		OutputMicrosPerMillionTokens int64 `json:"output_micros_per_million_tokens"`
+	} `json:"pricing"`
+}
+
+func applyUsageCost(raw json.RawMessage, usage *providers.Usage) {
+	if usage == nil || usage.CostMicros != 0 || len(raw) == 0 {
+		return
+	}
+	var settings pricingSettings
+	if json.Unmarshal(raw, &settings) != nil {
+		return
+	}
+	usage.CostMicros = (int64(usage.InputTokens)*settings.Pricing.InputMicrosPerMillionTokens + int64(usage.OutputTokens)*settings.Pricing.OutputMicrosPerMillionTokens) / 1_000_000
+}
 func (e *Engine) tryComplete(ctx context.Context, s *state, cfg storage.ProviderConfig, request providers.Request) (providers.Response, error) {
 	if !acquire(s.semaphore) {
 		return providers.Response{}, &providers.Error{Class: providers.ErrorUnavailable, Provider: cfg.Name, Retryable: true, Message: ErrSaturated.Error(), Cause: ErrSaturated}
@@ -103,8 +126,15 @@ func (e *Engine) tryComplete(ctx context.Context, s *state, cfg storage.Provider
 	var lastErr error
 	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
 		attemptCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		attemptCtx, span := otel.Tracer("forgegate/routing").Start(attemptCtx, "provider.complete")
+		span.SetAttributes(attribute.String("provider.name", cfg.Name), attribute.Int("retry.attempt", attempt))
 		started := time.Now()
 		response, err := s.provider.Complete(attemptCtx, request)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "provider failure")
+		}
+		span.End()
 		cancel()
 		outcome := "success"
 		if err != nil {
